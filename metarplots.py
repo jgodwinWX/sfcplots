@@ -1,3 +1,5 @@
+#!/bin/env python
+
 import cartopy.crs as ccrs
 import cartopy.feature as feat
 import math
@@ -15,6 +17,7 @@ from metpy.plots.wx_symbols import sky_cover,current_weather
 from metpy.units import units
 from scipy.constants.constants import C2F
 
+# function for converting cloud cover code to oktas
 def get_cloud_cover(code):
 
     if isinstance(code,float):
@@ -43,11 +46,13 @@ pres_weather = []
 sky_cov = []
 sky_layer_base = []
 
-# get the valid time
-lastHourDateTime = datetime.utcnow() - timedelta(hours = 1)
+# get the valid time: we get a two-hour buffer since the EDEX can be flakey
+lastHourDateTime = datetime.utcnow() - timedelta(hours = 2)
+endHourDateTime = datetime.utcnow() - timedelta(hours = 1)
 start = lastHourDateTime.strftime('%Y-%m-%d %H')
+end = endHourDateTime.strftime('%Y-%m-%d %H')
 beginRange = datetime.strptime( start + ":00:00", "%Y-%m-%d %H:%M:%S")
-endRange = datetime.strptime( start + ":59:59", "%Y-%m-%d %H:%M:%S")
+endRange = datetime.strptime( end + ":59:59", "%Y-%m-%d %H:%M:%S")
 timerange = TimeRange(beginRange, endRange)
 
 # request observations from the UCAR EDEX server
@@ -103,15 +108,19 @@ for ix,val in enumerate(df_recent['windSpeed']):
 
 # convert dataframe to something metpy-readable by attaching units and calculating derived values
 data = dict()
-data['stid'] = np.array(df_recent['stationName'])
-data['latitude'] = np.array(df_recent['latitude'])
-data['longitude'] = np.array(df_recent['longitude'])
-data['air_temperature'] = C2F(np.array(df_recent['temperature'],dtype=float) * units.degF)
-data['dew_point'] = C2F(np.array(df_recent['dewpoint'],dtype=float) * units.degF)
-data['slp'] = np.array(df_recent['seaLevelPress'],dtype=float) * units('mbar')
-u,v = get_wind_components(np.array(df_recent['windSpeed']) * units('knots'),\
-    np.array(df_recent['windDir']) * units.degree)
+data['stid'] = np.array(df_recent['stationName'])                           # station ID
+data['latitude'] = np.array(df_recent['latitude'])                          # station latitude
+data['longitude'] = np.array(df_recent['longitude'])                        # station longitude
+data['air_temperature'] = C2F(np.array(df_recent['temperature'],\
+    dtype=float) * units.degF)                                              # air temperature
+data['dew_point'] = C2F(np.array(df_recent['dewpoint'],\
+    dtype=float) * units.degF)                                              # dewpoint temperature
+data['slp'] = np.array(df_recent['seaLevelPress'],\
+    dtype=float) * units('mbar')                                            # sea-level pressure
+u,v = get_wind_components(np.array(df_recent['windSpeed']) * \
+    units('knots'),np.array(df_recent['windDir']) * units.degree)           # wind speed/direction
 
+# filter out missing winds
 for ix,val in enumerate(u.magnitude):
     if abs(val) > 100.0:
         u.magnitude[ix] = 0.0
@@ -126,30 +135,42 @@ data['cloud_frac'] = [int(get_cloud_cover(x)*8) for x in df_recent['skyCover']]
 # set up the basemap
 proj = ccrs.LambertConformal(central_longitude=-99.0,central_latitude=31.5,\
     standard_parallels=[35])
+
+# get some map features
 state_boundaries = feat.NaturalEarthFeature(category='cultural',\
-    name='admin_1_states_provinces_lines',scale='110m',facecolor="None")
+    name='admin_1_states_provinces_lines',scale='50m',facecolor="None")
+land_50m = feat.NaturalEarthFeature('physical','land','50m',facecolor='None')
+ocean_50m = feat.NaturalEarthFeature('physical','ocean','50m',facecolor='None')
+borders_50m = feat.NaturalEarthFeature(category='cultural',name='admin_0_countries',\
+    scale='50m',facecolor='None')
 
 # set up the figure
 plt.clf()
 fig = plt.figure(figsize=(20,15))
-ax = fig.add_subplot(1,1,1,projection=proj)
 
-ax.add_feature(feat.LAND, zorder=-1)
-ax.add_feature(feat.OCEAN, zorder=-1)
-ax.add_feature(feat.LAKES, zorder=-1)
-ax.coastlines(resolution='110m', zorder=2, color='black')
-ax.add_feature(state_boundaries, zorder=2)
-ax.add_feature(feat.BORDERS, linewidth='2', edgecolor='black')
+# add the map features to the figure
+ax = fig.add_subplot(1,1,1,projection=proj)
+ax.add_feature(feat.LAKES, zorder=1,facecolor='cyan')
+ax.add_feature(land_50m,zorder=0,facecolor='gray')
+ax.add_feature(ocean_50m,zorder=-1,facecolor='cyan')
+ax.coastlines(resolution='50m', zorder=2, color='black')
+ax.add_feature(state_boundaries, zorder=3,color='black')
+ax.add_feature(borders_50m,zorder=4,color='black')
 ax.set_extent((-110, -88, 25, 38))
 
+# create the station plots
 stationplot = StationPlot(ax,data['longitude'],data['latitude'],transform=ccrs.PlateCarree(),\
     fontsize=9)
 simple_layout.plot(stationplot,data)
 
+# station plot aesthetics
 stationplot.plot_parameter('NW', np.array(data['air_temperature']), color='red')
 stationplot.plot_parameter('SW', np.array(data['dew_point']), color='darkgreen')
 stationplot.plot_parameter('NE', np.array(data['slp']),
                            formatter=lambda v: format(10 * v, '.0f')[-3:])
 stationplot.plot_symbol('C', data['cloud_frac'], sky_cover)
 stationplot.plot_text((2, 0), np.array(data['stid']))
+
+# save the figure
+plt.title("METAR Observations valid %s00 UTC" % end)
 plt.savefig("plot.png",bbox_inches='tight')
